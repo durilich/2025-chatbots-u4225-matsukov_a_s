@@ -218,3 +218,9 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+
+# Данные лабораторного бота
+tasks.json
+tasks.json.tmp
+
+.DS_Store
