@@ -1632,9 +1632,9 @@ async def on_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
 
 def main() -> None:
     load_dotenv(Path(__file__).resolve().with_name(".env"))
-    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip() or os.getenv("BOT_TOKEN", "").strip()
     if not token:
-        raise SystemExit("Укажите TELEGRAM_BOT_TOKEN в файле .env")
+        raise SystemExit("Укажите TELEGRAM_BOT_TOKEN в файле .env или в переменных Railway")
 
     logging.basicConfig(
         format="%(asctime)s %(levelname)s %(name)s %(message)s",
