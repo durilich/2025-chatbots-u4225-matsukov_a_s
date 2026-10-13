@@ -222,5 +222,7 @@ __marimo__/
 # Данные лабораторного бота
 tasks.json
 tasks.json.tmp
+bot.db
+bot.db-journal
 
 .DS_Store
