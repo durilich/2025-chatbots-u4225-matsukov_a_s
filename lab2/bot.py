@@ -64,7 +64,7 @@ HELP = """Я веду задачи и привычки. Основной спо�
 История — выполненные и отменённые
 
 Под списком задач у каждого номера есть кнопки:
-✅ выполнена, ❌ отменена, 🔔 напоминание, 📅 день и приоритет.
+✅ выполнена, ❌ отменена, 🔔 напоминание, 📅 день и приоритет, Текст — новая формулировка.
 
 Команды /add, /today, /list, /done и остальные тоже работают.
 """
@@ -79,7 +79,10 @@ BTN_WEEK = "За неделю"
 BTN_FIND = "Найти"
 BTN_HISTORY = "История"
 STATUS_LABEL = {"active": "активна", "done": "выполнена", "cancelled": "отменена"}
-TASK_LEGEND = "Кнопки с номером задачи: ✅ выполнена, ❌ отменена, 🔔 напоминание, 📅 день и приоритет."
+TASK_LEGEND = "Кнопки с номером задачи: ✅ выполнена, ❌ отменена, 🔔 напоминание, 📅 день и приоритет, Текст — новая формулировка."
+HINT_NEW = "Дальше нажмите «Новая задача»."
+HINT_TODAY = "Дальше нажмите «Сегодня»."
+HINT_AFTER_ADD = "Дальше нажмите «Сегодня», чтобы увидеть её."
 PRIORITY_BY_CODE = {"high": "высокий", "medium": "средний", "low": "низкий"}
 
 MENU = [
@@ -706,8 +709,33 @@ def cmd_add(chat_id: int, args: list[str], job_queue) -> str:
     day_text = format_date(due) if due else "не назначен"
     return (
         f"Добавил задачу #{task_id}: {text}. "
-        f"Приоритет: {PRIORITY_LABEL[priority]}. День: {day_text}."
+        f"Приоритет: {PRIORITY_LABEL[priority]}. День: {day_text}. "
+        f"{HINT_AFTER_ADD}"
     )
+
+
+def edit_task_text(chat_id: int, task_id: int, text: str) -> str:
+    """Меняет только формулировку. Номер, день, приоритет и напоминание остаются."""
+    new_text = text.strip()
+    if not new_text:
+        return "Напишите новый текст одним сообщением."
+    data = store.load()
+    try:
+        task = require_task(store.read_chat(data, chat_id), task_id)
+    except LookupError as exc:
+        return str(exc)
+    if message := active_message(task):
+        return message
+    task["text"] = new_text
+    store.save(data)
+    return f"Обновил текст задачи #{task_id}: {new_text}."
+
+
+def start_hint(chat_id: int) -> str:
+    """Короткая подсказка: с чего начать или куда смотреть задачи на день."""
+    if ordered_active(chat_id):
+        return HINT_TODAY
+    return HINT_NEW
 
 
 def require_task(chat: dict | None, task_id: int) -> dict:
@@ -1175,6 +1203,7 @@ def task_keyboard(tasks: list[dict]) -> InlineKeyboardMarkup | None:
                 InlineKeyboardButton(f"📅 {task_id}", callback_data=f"date:{task_id}"),
             ]
         )
+        rows.append([InlineKeyboardButton(f"Текст {task_id}", callback_data=f"edit:{task_id}")])
     if not rows:
         return None
     return InlineKeyboardMarkup(rows)
@@ -1378,6 +1407,18 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         await update.effective_message.reply_text(HELP, reply_markup=main_keyboard())
 
 
+async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.effective_message
+    if message is None or update.effective_chat is None:
+        return
+    try:
+        hint = start_hint(update.effective_chat.id)
+    except StorageError:
+        logger.exception("Не удалось выбрать подсказку для /start")
+        hint = HINT_NEW
+    await message.reply_text(f"{HELP}\n{hint}", reply_markup=main_keyboard())
+
+
 async def unknown_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_message is not None:
         await update.effective_message.reply_text(
@@ -1494,6 +1535,17 @@ async def on_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
         clear_draft(context.user_data)
         await send_text(message, run_action(chat_id, cmd_find, [text], job_queue), main_keyboard())
         return
+    if kind == "edit":
+        task_id = waiting.get("task_id")
+        if not isinstance(task_id, int):
+            clear_draft(context.user_data)
+            await message.reply_text("Откройте список и нажмите «Текст» ещё раз.", reply_markup=main_keyboard())
+            return
+        result = edit_task_text(chat_id, task_id, text)
+        if result.startswith("Обновил") or result.startswith("Задачи с номером") or result.startswith("Задача #"):
+            clear_draft(context.user_data)
+        await send_text(message, result, main_keyboard())
+        return
 
     await message.reply_text(
         "Нажмите кнопку внизу. Чтобы добавить задачу, выберите «Новая задача».",
@@ -1554,6 +1606,11 @@ async def route_callback(query, context: ContextTypes.DEFAULT_TYPE, parts: list[
         )
     elif action == "rem" and task_id is not None:
         await message.reply_text(f"Когда напомнить про задачу #{task_id}?", reply_markup=remind_menu(task_id))
+    elif action == "edit" and task_id is not None:
+        context.user_data["await"] = {"kind": "edit", "task_id": task_id}
+        await message.reply_text(
+            f"Напишите новый текст задачи #{task_id}. Номер, день и напоминание сохранятся."
+        )
     elif action == "setprio" and task_id is not None and len(parts) == 3:
         word = PRIORITY_BY_CODE.get(parts[2])
         if word is None:
@@ -1652,7 +1709,8 @@ def main() -> None:
     if application.job_queue is None:
         raise SystemExit("Нужна установка с очередью задач: python-telegram-bot[job-queue]")
 
-    application.add_handler(CommandHandler(["start", "help"], help_command))
+    application.add_handler(CommandHandler("start", start_command))
+    application.add_handler(CommandHandler("help", help_command))
     for name, action in ACTIONS.items():
         application.add_handler(CommandHandler(name, make_handler(action)))
     application.add_handler(CallbackQueryHandler(on_callback))
